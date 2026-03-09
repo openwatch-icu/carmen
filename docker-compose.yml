@@ -1,0 +1,9 @@
+services:
+  openwatch:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - PROXY_ENABLED=true
+      - ALLOWED_ORIGIN=http://localhost:3000
+    restart: unless-stopped

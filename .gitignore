@@ -1,0 +1,48 @@
+# Secrets
+.env
+.env.*
+.env.local
+*.pem
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Ruff / Pyright
+.ruff_cache/
+.pyright/
+pyrightconfig.json
+
+# Build / dist
+dist/
+build/
+*.egg
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Docker
+.docker/
+
+# Coverage / testing
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Temp / HLS segments
+openwatch_*/
+*.ts
+!frontend/**/*.ts
+
