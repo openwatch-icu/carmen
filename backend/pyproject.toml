@@ -17,3 +17,4 @@ pythonVersion = "3.14"
 venvPath = "."
 venv = ".venv"
 typeCheckingMode = "basic"
+exclude = ["tests"]
