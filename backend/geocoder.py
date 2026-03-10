@@ -12,9 +12,7 @@ NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 HEADERS = {"User-Agent": "OpenWatch/1.0 (privacy-awareness-tool)"}
 
 
-async def geocode_location(
-    query: str,
-) -> dict | None:
+def geocode_location(query: str) -> dict | None:
     """
     Convert a zip code, city name, or address string to lat/lng.
 
@@ -28,9 +26,9 @@ async def geocode_location(
         "addressdetails": 0,
     }
 
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    with httpx.Client(timeout=10.0) as client:
         try:
-            resp = await client.get(
+            resp = client.get(
                 NOMINATIM_URL,
                 params=params,
                 headers=HEADERS,
@@ -47,7 +45,9 @@ async def geocode_location(
             return None
 
     if not results:
-        log.warning("Nominatim returned no results for: %s", query)
+        log.warning(
+            "Nominatim returned no results for: %s", query
+        )
         return None
 
     top = results[0]

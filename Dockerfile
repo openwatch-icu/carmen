@@ -25,6 +25,9 @@ ENV TMPDIR=/tmp/openwatch
 
 USER appuser
 
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+
 # Gunicorn 25+ enables a control server by default and creates gunicorn.ctl in CWD.
 # We run as non-root (appuser); CWD is backend/ (root-owned), so disable the socket.
 CMD ["sh", "-c", "gunicorn --bind 0.0.0.0:${PORT:-8000} --worker-class gevent --workers ${GUNICORN_WORKERS:-4} --worker-connections 100 --timeout 30 --worker-tmp-dir /tmp/openwatch --no-control-socket --chdir backend main:app"]

@@ -8,6 +8,10 @@ select = ["E", "W", "F", "I"]
 [tool.ruff.lint.isort]
 known-first-party = ["geocoder", "shodan_client"]
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
 [tool.pyright]
 pythonVersion = "3.14"
 venvPath = "."

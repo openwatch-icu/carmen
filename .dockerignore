@@ -8,3 +8,5 @@
 *.md
 .ruff_cache
 .mypy_cache
+.claudeignore
+.claude/

@@ -1,12 +1,14 @@
 """
 RTSP → HLS transcoding manager.
 
-Spawns one ffmpeg subprocess per camera stream, writing HLS segments to
-a temporary directory. Flask serves those files directly. Idle streams
-are cleaned up automatically after STREAM_TIMEOUT_S seconds.
+Spawns one ffmpeg subprocess per camera stream, writing HLS
+segments to a temporary directory. Flask serves those files
+directly. Idle streams are cleaned up automatically after
+STREAM_TIMEOUT_S seconds.
 """
 
 import atexit
+import ipaddress
 import logging
 import os
 import shutil
@@ -18,11 +20,15 @@ import uuid
 
 log = logging.getLogger(__name__)
 
-STREAM_TIMEOUT_S = 90  # kill stream if not accessed for N seconds
-SEGMENT_READY_TIMEOUT = 8  # seconds to wait for first HLS segment
+STREAM_TIMEOUT_S = 90
+SEGMENT_READY_TIMEOUT = 8
 SEGMENT_POLL_INTERVAL = 0.2
-MAX_CONCURRENT_STREAMS = int(os.environ.get("MAX_CONCURRENT_STREAMS", "10"))
-MAX_STREAMS_PER_IP = int(os.environ.get("MAX_STREAMS_PER_IP", "3"))
+MAX_CONCURRENT_STREAMS = int(
+    os.environ.get("MAX_CONCURRENT_STREAMS", "10")
+)
+MAX_STREAMS_PER_IP = int(
+    os.environ.get("MAX_STREAMS_PER_IP", "3")
+)
 
 # Common RTSP stream paths per brand, tried in order.
 RTSP_PATHS: dict[str, list[str]] = {
@@ -64,12 +70,48 @@ _streams: dict[str, dict] = {}
 _lock = threading.Lock()
 
 
-def _candidate_urls(ip: str, port: int, brand: str) -> list[str]:
+def _reject_private_ip(ip: str) -> bool:
+    """
+    Defense-in-depth: reject private/internal IPs at the
+    stream_manager boundary. Duplicates the check in main.py
+    intentionally so stream_manager never trusts its caller.
+
+    Returns True if the IP is rejected.
+    """
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return True
+
+    if (
+        isinstance(addr, ipaddress.IPv6Address)
+        and addr.ipv4_mapped is not None
+    ):
+        addr = addr.ipv4_mapped
+
+    return (
+        addr.is_private
+        or addr.is_loopback
+        or addr.is_link_local
+        or addr.is_reserved
+        or addr.is_multicast
+        or addr.is_unspecified
+    )
+
+
+def _candidate_urls(
+    ip: str, port: int, brand: str
+) -> list[str]:
     paths = RTSP_PATHS.get(brand, []) + RTSP_PATHS["_generic"]
     return [f"rtsp://{ip}:{port}{p}" for p in paths]
 
 
-def _ffmpeg_cmd(rtsp_url: str, playlist: str, seg_pattern: str) -> list[str]:
+# Uses list-form subprocess (not shell=True) to prevent shell
+# injection. Inputs are constrained to a validated IP address
+# and an integer port by callers.
+def _ffmpeg_cmd(
+    rtsp_url: str, playlist: str, seg_pattern: str
+) -> list[str]:
     return [
         "ffmpeg",
         "-loglevel",
@@ -78,7 +120,7 @@ def _ffmpeg_cmd(rtsp_url: str, playlist: str, seg_pattern: str) -> list[str]:
         "tcp",
         "-i",
         rtsp_url,
-        "-an",  # drop audio — reduces latency
+        "-an",
         "-c:v",
         "libx264",
         "-preset",
@@ -104,16 +146,21 @@ def _wait_for_segment(tmpdir: str) -> bool:
     """Block until an .ts segment exists or timeout expires."""
     deadline = time.monotonic() + SEGMENT_READY_TIMEOUT
     while time.monotonic() < deadline:
-        if any(f.endswith(".ts") for f in os.listdir(tmpdir)):
+        if any(
+            f.endswith(".ts") for f in os.listdir(tmpdir)
+        ):
             return True
         time.sleep(SEGMENT_POLL_INTERVAL)
     return False
 
 
+# Uses list-form subprocess to prevent shell injection.
+# See comment on _ffmpeg_cmd.
 def _probe_url(rtsp_url: str) -> bool:
     """
-    Return True if ffprobe can open the RTSP URL within 3 seconds.
-    Used to pick the correct path before committing an ffmpeg process.
+    Return True if ffprobe can open the RTSP URL within 3s.
+    Used to pick the correct path before committing an ffmpeg
+    process.
     """
     try:
         result = subprocess.run(
@@ -134,9 +181,31 @@ def _probe_url(rtsp_url: str) -> bool:
             capture_output=True,
             timeout=3,
         )
-        return result.returncode == 0 and b"video" in result.stdout
+        return (
+            result.returncode == 0
+            and b"video" in result.stdout
+        )
     except subprocess.TimeoutExpired, FileNotFoundError:
         return False
+
+
+def _kill_stream(stream: dict, label: str = "") -> None:
+    """
+    Terminate the ffmpeg process and remove temp files.
+    Does not touch the _streams dict — caller is responsible
+    for removing the entry under the lock first.
+    """
+    proc: subprocess.Popen = stream["process"]
+    try:
+        proc.terminate()
+        proc.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=2)
+
+    shutil.rmtree(stream["tmpdir"], ignore_errors=True)
+    if label:
+        log.info("Stopped stream %s", label)
 
 
 def start_stream(
@@ -145,12 +214,22 @@ def start_stream(
     """
     Start an ffmpeg HLS transcoding process for a camera.
 
-    Probes candidate RTSP URLs and starts ffmpeg on the first that
-    responds. Returns a stream_id string, or None if no URL responded.
+    Probes candidate RTSP URLs and starts ffmpeg on the first
+    that responds. Returns a stream_id string, or None if no
+    URL responded.
     """
+    if _reject_private_ip(ip):
+        log.warning(
+            "Rejected private IP in stream_manager: %s", ip
+        )
+        return None
+
     with _lock:
         if len(_streams) >= MAX_CONCURRENT_STREAMS:
-            log.warning("Stream cap reached (%d)", MAX_CONCURRENT_STREAMS)
+            log.warning(
+                "Stream cap reached (%d)",
+                MAX_CONCURRENT_STREAMS,
+            )
             return None
         if (
             requester_ip
@@ -201,7 +280,9 @@ def start_stream(
     )
 
     if not _wait_for_segment(tmpdir):
-        log.warning("ffmpeg produced no segments for %s", rtsp_url)
+        log.warning(
+            "ffmpeg produced no segments for %s", rtsp_url
+        )
         proc.kill()
         shutil.rmtree(tmpdir, ignore_errors=True)
         return None
@@ -220,10 +301,12 @@ def start_stream(
     return stream_id
 
 
-def get_stream_file(stream_id: str, filename: str) -> bytes | None:
+def get_stream_file(
+    stream_id: str, filename: str
+) -> bytes | None:
     """
-    Return the raw bytes of an HLS file for the given stream, or None.
-    Updates last_access timestamp for idle-timeout tracking.
+    Return the raw bytes of an HLS file for the given stream,
+    or None. Updates last_access for idle-timeout tracking.
     """
     with _lock:
         stream = _streams.get(stream_id)
@@ -248,16 +331,7 @@ def stop_stream(stream_id: str) -> None:
         stream = _streams.pop(stream_id, None)
     if stream is None:
         return
-
-    proc: subprocess.Popen = stream["process"]
-    try:
-        proc.terminate()
-        proc.wait(timeout=3)
-    except Exception:
-        proc.kill()
-
-    shutil.rmtree(stream["tmpdir"], ignore_errors=True)
-    log.info("Stopped stream %s", stream_id)
+    _kill_stream(stream, label=stream_id)
 
 
 def _cleanup_loop() -> None:
@@ -265,18 +339,19 @@ def _cleanup_loop() -> None:
     while True:
         time.sleep(15)
         now = time.monotonic()
+        stale: list[tuple[str, dict]] = []
         with _lock:
-            idle = [
-                sid
-                for sid, s in _streams.items()
-                if now - s["last_access"] > STREAM_TIMEOUT_S
-            ]
-        for sid in idle:
+            for sid, s in list(_streams.items()):
+                if now - s["last_access"] > STREAM_TIMEOUT_S:
+                    stale.append((sid, _streams.pop(sid)))
+        for sid, stream in stale:
             log.info("Idle timeout — stopping stream %s", sid)
-            stop_stream(sid)
+            _kill_stream(stream, label=sid)
 
 
-# Start cleanup thread when module is imported
+# Cleanup thread runs as a daemon. Under gunicorn+gevent,
+# gevent monkey-patches threading so Lock becomes
+# greenlet-safe and the daemon thread coexists correctly.
 _cleanup_thread = threading.Thread(
     target=_cleanup_loop, daemon=True, name="stream-cleanup"
 )
@@ -286,9 +361,10 @@ _cleanup_thread.start()
 def _shutdown_all_streams() -> None:
     """Stop all active streams on process exit."""
     with _lock:
-        ids = list(_streams.keys())
-    for sid in ids:
-        stop_stream(sid)
+        entries = list(_streams.items())
+        _streams.clear()
+    for sid, stream in entries:
+        _kill_stream(stream, label=sid)
 
 
 atexit.register(_shutdown_all_streams)
