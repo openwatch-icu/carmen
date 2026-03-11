@@ -9,7 +9,8 @@ RUN useradd -r -s /bin/false appuser
 WORKDIR /app
 
 COPY backend/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt gunicorn
+RUN pip install --no-cache-dir --root-user-action=ignore \
+    -r requirements.txt gunicorn
 
 COPY backend/ ./backend/
 COPY frontend/ ./frontend/

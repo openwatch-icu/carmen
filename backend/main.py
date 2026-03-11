@@ -56,15 +56,12 @@ _STREAM_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 
 @app.after_request
 def _security_headers(response: Response) -> Response:
-    # Script hash is for the inline <script> in index.html.
-    # Update the hash if that block changes.
-    _script_hash = "'sha256-lnTF2PGyP3c5UBstXI0ZR6aUC/1ZRNI8jf1Qb62i3q0='"
     _cf = "https://static.cloudflareinsights.com"
     _carto = "https://*.basemaps.cartocdn.com"
     _cdn = "https://unpkg.com https://cdn.jsdelivr.net"
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; "
-        f"script-src 'self' {_script_hash} {_cdn} {_cf}; "
+        f"script-src 'self' {_cdn} {_cf}; "
         f"style-src 'self' 'unsafe-inline' https://unpkg.com; "
         f"img-src 'self' data: blob: {_carto}; "
         f"connect-src 'self' {_cdn} {_carto}; "
