@@ -12,8 +12,8 @@ COPY backend/requirements.txt .
 RUN pip install --no-cache-dir --root-user-action=ignore \
     -r requirements.txt gunicorn
 
-COPY backend/ ./backend/
 COPY frontend/ ./frontend/
+COPY backend/ ./backend/
 
 RUN mkdir -p /tmp/openwatch && chown appuser:appuser /tmp/openwatch \
     && mkdir -p /home/appuser && chown appuser:appuser /home/appuser
